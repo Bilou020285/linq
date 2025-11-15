@@ -1,0 +1,30 @@
+
+[general]
+name=LinQ
+qgisMinimumVersion=3.40
+description=LinQ permet d'afficher un diagramme des relations enregistrées dans le projet. La flèche entre les tables indique le sens de la relation (parent vers enfant). Il est possible de charger des tables dans la partie inférieure afin d'afficher les relations enfants existantes pour chacune des tables chargées et d'établir de nouvelles relations d'enfant vers parent par cliquer/glisser de la table enfant vers la table parent. LinQ allows you to display a diagram of the relationships recorded in the project. The arrow between tables indicates the direction of the relationship (parent to child). Tables can be loaded in the lower section to display the existing child relationships for each of the loaded tables and to establish new child-to-parent relationships by clicking and dragging the child table to the parent table.  
+
+author=Caroline Font, Inrap. ChatGPT5
+email=caroline.font@inrap.fr
+
+about=Ce plugin permet d'afficher sous forme de diagramme les relations enregistrées dans un projet. L'application Graphviz est recommandée pour obtenir un affichage sous la forme d'un diagramme. Cette application peut être installée depuis la ligne de commande suivante : WINDOWS (winget install Graphviz.Graphviz) ; MAC (brew install graphviz) ; LINUX (sudo apt install graphviz). La flèche indique le sens de la relation : depuis la table parent, vers la table enfant. Un clic-droit sur cette dernière permet d'afficher les champs référencées dans la relation. Il est possible de chercher une table grâce à un champ de filtre et d'exporter le diagramme sous le format SVG ou le format XML (compatible avec le logiciel draw.io). Un double clic sur une table charge cette dernière dans la section inférieure. Une liste des entités présentes apparaît et une arborescence permet d'accéder à la liste des entités enfants par table en relation. Il est possible de choisir le champ affiché dans la liste pour les entités parents, et pour les entités enfants. Le chargement d'autres tables en relation permet par cliquer/glisser d'établir une nouvelle relation entre parent et enfant. Dans le cas de relations de plusieurs à plusieurs, le formulaire pré-rempli des clés étrangères s'affiche et permet de saisir les éventuels champs de la table de jonction. Il est également possible de délier des entités enfants depuis la table parent par un clic-droit sur l'entité à délier. This plugin allows you to display the relationships recorded in a project in diagram form. The Graphviz application is recommended for displaying diagrams. This application can be installed using the following command line: WINDOWS (winget install Graphviz.Graphviz); MAC (brew install graphviz); LINUX (sudo apt install graphviz). The arrow indicates the direction of the relationship: from the parent table to the child table. Right-clicking on the latter displays the fields referenced in the relationship. It is possible to search for a table using a filter field and export the diagram in SVG or XML format (compatible with draw.io software). Double-clicking on a table loads it into the lower section. A list of entities appears, and a tree structure allows you to access the list of child entities by related table. You can choose the field displayed in the list for parent entities and for child entities. Loading other related tables allows you to establish a new parent-child relationship by clicking and dragging. In the case of many-to-many relationships, the pre-filled foreign key form is displayed, allowing you to enter any fields from the join table. It is also possible to unlink child entities from the parent table by right-clicking on the entity to be unlinked.
+
+tracker=https://github.com/Bilou020285/linq/issues
+repository=https://github.com/Bilou020285/linq
+
+changelog=Version : Accélération du chargement des entités après changement du label dans les tables de la section inférieure grâce à une option de filtre selon un nombre maximum d'entité.
+
+tags=python, QGIS, plugin, relations
+version=1
+license=GPL-2.0-or-later
+
+homepage=https://github.com/Bilou020285/linq
+icon=icon.png
+# experimental flag
+experimental=True
+
+# Category of the plugin: Raster, Vector, Database or Web
+category=Raster, Vector, Database
+
+# If the plugin can run on QGIS Server.
+server=False
