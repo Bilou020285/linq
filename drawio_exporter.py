@@ -69,7 +69,7 @@ def _grid_positions(n, start_x=40, start_y=40, cell_w=300, cell_h=170, cols=4):
         pos.append((start_x + c * cell_w, start_y + r * cell_h))
     return pos
 
-def build_drawio(snapshot, node_positions=None, style=None):
+def build_drawio(snapshot, node_positions=None, style=None, focus_ids=None):
     """
     snapshot.layers: dict id->LayerNode(id, name, is_link_table)
     snapshot.edges: list RelationEdge(id, parent_layer_id, child_layer_id, pairs=[(pk, fk), ...])
@@ -77,8 +77,26 @@ def build_drawio(snapshot, node_positions=None, style=None):
     id2name = {n.id: n.name for n in snapshot.layers.values()}
     pkfk = _gather_pk_fk(snapshot)
 
+    # Filtrage optionnel des couches / relations (même logique que GraphvizRenderer)
+    focus_ids = set(focus_ids or [])
+
     layer_list = list(snapshot.layers.values())
     layer_list.sort(key=lambda n: n.name.lower())
+
+    all_edges = list(snapshot.edges)
+    if focus_ids:
+        keep_nodes = set(focus_ids)
+        keep_edges = []
+        for e in all_edges:
+            if e.parent_layer_id in focus_ids or e.child_layer_id in focus_ids:
+                keep_edges.append(e)
+                keep_nodes.add(e.parent_layer_id)
+                keep_nodes.add(e.child_layer_id)
+        # On ne garde que les tables concernées par le focus + leurs voisines
+        layer_list = [n for n in layer_list if n.id in keep_nodes]
+        edge_list = keep_edges
+    else:
+        edge_list = all_edges
 
     # positions
     if node_positions:
@@ -185,7 +203,7 @@ def build_drawio(snapshot, node_positions=None, style=None):
             )
 
     # ---------------------- ARÊTES ------------------------------------------
-    for e in snapshot.edges:
+    for e in edge_list:
         src = node_id_map.get(e.parent_layer_id)
         tgt = node_id_map.get(e.child_layer_id)
         if not src or not tgt:

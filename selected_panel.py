@@ -189,11 +189,23 @@ class FeatureTreeView(QTreeView):
         if node.node_type == NT_REL_GROUP:
             m = QMenu(self)
             sub = m.addMenu("Afficher le champ")
+
+            # NEW : expression QGIS pour cette couche enfant
+            a_expr = sub.addAction("[Expression QGIS…]")
+            a_expr.triggered.connect(
+                lambda: self.host.open_child_expression_builder(node.layer)
+            )
+            sub.addSeparator()
+
             a_id = sub.addAction("[ID]")
-            a_id.triggered.connect(lambda: self.host.set_child_display_field(node.layer, "__ID__"))
+            a_id.triggered.connect(
+                lambda: self.host.set_child_display_field(node.layer, "__ID__")
+            )
             for fld in node.layer.fields():
                 a = sub.addAction(fld.name())
-                a.triggered.connect(lambda _, name=fld.name(): self.host.set_child_display_field(node.layer, name))
+                a.triggered.connect(
+                    lambda _, name=fld.name(): self.host.set_child_display_field(node.layer, name)
+                )
             m.exec_(self.mapToGlobal(pos))
             return
 
@@ -314,6 +326,7 @@ class ColumnWidget(QWidget):
         self._max_provider = max_provider
         self.display_field = None; self.display_expr = None
         self.child_display_field = {}
+        self.child_display_expr = {}   # <- NEW : expressions pour les couches enfants
         self._expanded = set()
 
         root = QVBoxLayout(self)
@@ -529,6 +542,25 @@ class ColumnWidget(QWidget):
         return str(feat.id())
 
     def format_label_for_layer(self, layer, feat):
+        # 1) Expression spécifique pour cette couche enfant ?
+        expr = self.child_display_expr.get(layer.id())
+        if expr:
+            try:
+                from qgis.core import (
+                    QgsExpression, QgsExpressionContext, QgsExpressionContextUtils
+                )
+                e = QgsExpression(expr)
+                if not e.hasParserError():
+                    ctx = QgsExpressionContext()
+                    ctx.appendScopes(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+                    ctx.setFeature(feat)
+                    val = e.evaluate(ctx)
+                    if not e.hasEvalError():
+                        return "" if val is None else str(val)
+            except Exception:
+                pass  # en cas de souci, on retombe sur le comportement standard
+
+        # 2) Sinon, champ choisi pour cette couche enfant
         chosen = self.child_display_field.get(layer.id())
         if chosen == "__ID__":
             return str(feat.id())
@@ -537,17 +569,94 @@ class ColumnWidget(QWidget):
                 v = feat[chosen]; return "" if v is None else str(v)
             except Exception:
                 pass
+
+        # 3) Sinon, formatage général de la colonne
         return self.format_label(layer, feat)
 
     def set_child_display_field(self, child_layer, field_name_or_id):
         if field_name_or_id not in ("__ID__",) and field_name_or_id not in child_layer.fields().names():
             return
+        # Choix d'un champ → on oublie l'éventuelle expression pour cette couche
+        self.child_display_expr.pop(child_layer.id(), None)
         self.child_display_field[child_layer.id()] = field_name_or_id
         self.rebuild()
 
+    def set_child_display_expression(self, child_layer, expr: str):
+        """Définit une expression QGIS pour les entités enfants de cette couche."""
+        lid = child_layer.id()
+        expr = (expr or "").strip()
+        if not expr:
+            # Expression vide → on l'enlève
+            self.child_display_expr.pop(lid, None)
+        else:
+            self.child_display_expr[lid] = expr
+        # Une expression a priorité sur le champ → on oublie le champ sélectionné
+        self.child_display_field.pop(lid, None)
+        self.rebuild()
+
+    # ----- Export HTML (section pour cette colonne) -----
+    def to_html_section(self) -> str:
+        """
+        Construit un fragment HTML représentant cette colonne :
+        - titre de la couche
+        - arbre filtré (selon le proxy) dans des <ul><li>
+        - le label de chaque noeud est self.model / self.proxy (donc respect
+          le champ / expression / filtre définis par l'utilisateur·ice).
+        """
+
+        def esc(s):
+            if s is None:
+                return ""
+            return (
+                str(s)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        proxy = self.proxy
+        model = self.model
+
+        # Si rien n'est affiché dans la colonne, on retourne une petite note
+        if proxy.rowCount() == 0:
+            title_txt = esc(self.layer.name())
+            return f"<h2>{title_txt}</h2><p class='meta'><i>Aucune entité affichée dans cette colonne.</i></p>"
+
+        def recurse(proxy_index):
+            # proxy_index : index dans le proxy -> on récupère le Node source
+            src_index = proxy.mapToSource(proxy_index)
+            node = model.nodeFromIndex(src_index)
+            label = esc(node.label)
+
+            # Enfants visibles (après filtrage du proxy)
+            child_count = proxy.rowCount(proxy_index)
+            if child_count == 0:
+                return f"<li>{label}</li>"
+
+            html = [f"<li>{label}<ul>"]
+            for row in range(child_count):
+                child_proxy_index = proxy.index(row, 0, proxy_index)
+                html.append(recurse(child_proxy_index))
+            html.append("</ul></li>")
+            return "".join(html)
+
+        # Titre : on nettoie un peu le titre HTML (<b>...</b>) pour le rapport
+        raw_title = self.title.text() or self.layer.name()
+        # On enlève grossièrement les balises <b> éventuelles
+        clean_title = raw_title.replace("<b>", "").replace("</b>", "")
+        h = [f"<h2>{esc(clean_title)}</h2>"]
+
+        # Arbre : racine = index invalide, on parcourt les lignes de premier niveau
+        h.append("<details open><summary>Entités et relations</summary><ul>")
+        for r in range(proxy.rowCount()):
+            idx = proxy.index(r, 0)
+            h.append(recurse(idx))
+        h.append("</ul></details>")
+
+        return "\n".join(h)
+
     # ----- Expression Builder -----
-    def open_expression_builder(self):
-        # Essaie d'abord QgsExpressionDialog (3.16+), sinon BuilderDialog
+    def _open_qgis_expression_dialog(self, layer, initial_expr, window_title):
         ExprDlg = None
         try:
             from qgis.gui import QgsExpressionDialog as ExprDlg  # type: ignore
@@ -557,32 +666,56 @@ class ColumnWidget(QWidget):
             except Exception:
                 ExprDlg = None
         if ExprDlg is None:
-            QMessageBox.warning(self, "Indisponible", "Le générateur d’expression n’est pas disponible dans cet environnement.")
-            return
+            QMessageBox.warning(
+                self,
+                "Indisponible",
+                "Le générateur d’expression n’est pas disponible dans cet environnement."
+            )
+            return None
 
         try:
-            dlg = ExprDlg(self.layer, self.display_expr or "", self)
+            dlg = ExprDlg(layer, initial_expr or "", self)
             if hasattr(dlg, 'setWindowTitle'):
-                dlg.setWindowTitle("Expression d’affichage (QGIS)")
+                dlg.setWindowTitle(window_title)
         except TypeError:
             dlg = ExprDlg(self)
-            if hasattr(dlg, 'setLayer'): dlg.setLayer(self.layer)
-            if hasattr(dlg, 'setExpressionText'): dlg.setExpressionText(self.display_expr or "")
+            if hasattr(dlg, 'setLayer'):
+                dlg.setLayer(layer)
+            if hasattr(dlg, 'setExpressionText'):
+                dlg.setExpressionText(initial_expr or "")
             if hasattr(dlg, 'setWindowTitle'):
-                dlg.setWindowTitle("Expression d’affichage (QGIS)")
+                dlg.setWindowTitle(window_title)
 
         if dlg.exec_():
-            new_expr = None
             if hasattr(dlg, 'expressionText'):
-                new_expr = dlg.expressionText()
+                return dlg.expressionText()
             elif hasattr(dlg, 'expression'):
-                new_expr = dlg.expression()
-            if new_expr is not None:
-                self.fieldCombo.setCurrentIndex(0)  # [Expression QGIS…]
-                self.exprEdit.setText(new_expr)
-                self.display_field = None
-                self.display_expr = new_expr
-                self.rebuild()
+                return dlg.expression()
+        return None
+
+    def open_expression_builder(self):
+        new_expr = self._open_qgis_expression_dialog(
+            self.layer,
+            self.display_expr,
+            "Expression d’affichage (QGIS)"
+        )
+        if new_expr is not None:
+            self.fieldCombo.setCurrentIndex(0)  # [Expression QGIS…]
+            self.exprEdit.setText(new_expr)
+            self.display_field = None
+            self.display_expr = new_expr
+            self.rebuild()
+
+    def open_child_expression_builder(self, child_layer):
+        """Ouvre le générateur d'expression pour une couche enfant (relation)."""
+        current = self.child_display_expr.get(child_layer.id())
+        new_expr = self._open_qgis_expression_dialog(
+            child_layer,
+            current,
+            f"Expression d’affichage (enfants de « {child_layer.name()} »)"
+        )
+        if new_expr is not None:
+            self.set_child_display_expression(child_layer, new_expr)
 
     # ----- édition -----
     def _ensure_edit_with_prompt(self, layer: QgsVectorLayer) -> bool:
@@ -824,7 +957,11 @@ class ColumnWidget(QWidget):
         from .relation_utils import find_link_tables_between
         cands = find_link_tables_between(QgsProject.instance(), src_layer, tgt_layer)
         if cands:
-            L = None; rel_src = None; rel_tgt = None
+            L = None
+            rel_src = None
+            rel_tgt = None
+
+            # 1) Choix / détection de la table d'association
             if len(cands) == 1:
                 L, r1, r2 = cands[0]
                 if r1.referencedLayer().id() == src_layer.id():
@@ -840,10 +977,17 @@ class ColumnWidget(QWidget):
                     fp1 = ", ".join([f"{pk}->{fk}" for pk, fk in r1.fieldPairs().items()])
                     fp2 = ", ".join([f"{pk}->{fk}" for pk, fk in r2.fieldPairs().items()])
                     label = f"{Lk.name()}  ⟦ {p1}[{fp1}] + {p2}[{fp2}] ⟧"
-                    options.append(label); mapping.append((Lk, r1, r2))
-                choice, ok = QInputDialog.getItem(self, "Choisir la table d’association",
-                                                  "Plusieurs tables d’association relient ces deux couches :",
-                                                  options, 0, False)
+                    options.append(label)
+                    mapping.append((Lk, r1, r2))
+
+                choice, ok = QInputDialog.getItem(
+                    self,
+                    "Choisir la table d’association",
+                    "Plusieurs tables d’association relient ces deux couches :",
+                    options,
+                    0,
+                    False
+                )
                 if not ok:
                     return
                 sel_idx = options.index(choice)
@@ -853,95 +997,67 @@ class ColumnWidget(QWidget):
                 else:
                     rel_src, rel_tgt = r2, r1
 
+            # 2) Entité cible (celle sur laquelle on a lâché le drag)
             target_feat = resolve_target_feat()
             if not target_feat:
-                self._mb('Choisis (ou vise) une entité dans la colonne cible.', 1); return
+                self._mb('Choisis (ou vise) une entité dans la colonne cible.', 1)
+                return
+
             if not self._ensure_edit_with_prompt(L):
                 return
-            src_feat = src_layer.getFeature(ids[0])
-            if not src_feat.isValid():
-                self._mb('Entité source invalide.', 2); return
 
-            try:
-                link_feat = new_prefilled_link_feature(L, rel_src, rel_tgt, src_feat, target_feat)
-            except KeyError as ex:
-                self._mb(f"FK introuvable dans la table d’association : {ex}", 2); return
+            created_links = []
 
-            ok = L.addFeature(link_feat)
-            if ok:
-                # Récupère la ligne vraiment créée
+            # 3) Pour CHAQUE entité glissée, on crée une ligne dans la table d’assoc
+            for fid in ids:
+                src_feat = src_layer.getFeature(fid)
+                if not src_feat.isValid():
+                    continue
+
+                try:
+                    link_feat = new_prefilled_link_feature(L, rel_src, rel_tgt, src_feat, target_feat)
+                except KeyError as ex:
+                    self._mb(f"FK introuvable dans la table d’association : {ex}", 2)
+                    continue
+
+                if not L.addFeature(link_feat):
+                    continue
+
+                # On essaie de récupérer la version "vue par la couche"
                 try:
                     persisted = L.getFeature(link_feat.id())
                 except Exception:
-                    persisted = None
+                    persisted = link_feat
 
-                # Helper local : paires (parent_field, child_field) robustes
-                def _pairs_parent_child(rel):
-                    pairs = []
-                    parent = rel.referencedLayer()
-                    child = rel.referencingLayer()
-                    if not parent or not child:
-                        return pairs
-                    for a, b in rel.fieldPairs().items():
-                        # On veut (PK_parent -> FK_child)
-                        if child.fields().indexOf(b) != -1:
-                            pairs.append((a, b))
-                        elif child.fields().indexOf(a) != -1:
-                            pairs.append((b, a))
-                        else:
-                            pairs.append((a, b))
-                    return pairs
-
-                # Si les FK sont NULL (ou vides) après insertion (certains providers / defaults),
-                # force-les explicitement sur la ligne persistée.
                 if persisted and persisted.isValid():
-                    updates = {}
-                    # FK côté source
-                    for pk, fk in _pairs_parent_child(rel_src):
-                        if fk in L.fields().names():
-                            try:
-                                if persisted[fk] in (None, ''):
-                                    updates[L.fields().indexOf(fk)] = src_feat[pk]
-                            except Exception:
-                                pass
-                    # FK côté cible
-                    for pk, fk in _pairs_parent_child(rel_tgt):
-                        if fk in L.fields().names():
-                            try:
-                                if persisted[fk] in (None, ''):
-                                    updates[L.fields().indexOf(fk)] = target_feat[pk]
-                            except Exception:
-                                pass
+                    created_links.append(persisted)
+                else:
+                    created_links.append(link_feat)
 
-                    if updates:
-                        if not L.isEditable():
-                            L.startEditing()
-                        L.changeAttributeValues(persisted.id(), updates)
-                        L.triggerRepaint()
+            if not created_links:
+                self._mb("Impossible d’ajouter dans la table d’association.", 2)
+                return
 
-                # Commit immédiat puis ré-ouvrir en édition pour permettre la saisie de champs annexes
-                L.commitChanges()
-                L.startEditing()
-                L.triggerRepaint()
-
-                # Ouvre le formulaire configuré du projet (utile si des champs annexes existent)
-                try:
-                    if persisted and persisted.isValid():
-                        self.iface.openFeatureForm(L, persisted, True)
-                    else:
-                        self.iface.openFeatureForm(L, link_feat, True)
-                except Exception:
-                    pass
-
-                # PATCH: maj des crayons pour la table d’association
-                if self.board:
-                    self.board.refresh_edit_state_for(L)
-
-                self._mb('Ligne d’association créée (FK auto-remplies).')
+            # 4) Mise à jour visuelle / crayons
+            L.triggerRepaint()
+            if self.board:
+                self.board.refresh_edit_state_for(L)
             else:
-                self._mb('Impossible d’ajouter dans la table d’association.', 2)
+                self._update_edit_style()
 
-            self.rebuild()
+            # 5) Ouvrir les formulaires un par un pour chaque liaison créée
+            try:
+                for feat in created_links:
+                    if feat and feat.isValid():
+                        # Formulaire projet, en édition, modal
+                        self.iface.openFeatureForm(L, feat, True)
+            except Exception:
+                pass
+
+            self._mb(
+                f"{len(created_links)} ligne(s) d’association créée(s) (FK auto-remplies). "
+                "Enregistre quand tu veux."
+            )
             return
 
         self._mb('Aucune relation 1↔N ou N↔N détectée entre ces tables.', 2)
@@ -1120,3 +1236,23 @@ class SelectionBoard(QWidget):
                     c._update_edit_style()
             except Exception:
                 pass
+
+    # ----- Construction du rapport HTML pour toutes les colonnes -----
+    def build_html_report(self) -> str:
+        """
+        Construit le corps HTML du rapport à partir de TOUTES les colonnes
+        actuellement affichées dans LinQ (ordre gauche → droite).
+        """
+        parts = []
+        for col in self.columns:
+            try:
+                section = col.to_html_section()
+            except Exception as ex:
+                # On évite que tout casse à cause d'une colonne
+                name = getattr(col.layer, 'name', lambda: '<?>')()
+                section = (
+                    f"<h2>{name}</h2>"
+                    f"<p class='meta' style='color:red'>Erreur dans cette colonne : {ex}</p>"
+                )
+            parts.append(section)
+        return "\n".join(parts)

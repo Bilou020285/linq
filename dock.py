@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QUrl
+from qgis.PyQt.QtGui import QDesktopServices
 from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QSplitter, QLineEdit, QFormLayout, QMessageBox
 )
+import os, tempfile
 from qgis.core import QgsProject, QgsSettings
 
 from .relation_utils import RelationsSnapshot
@@ -33,6 +35,8 @@ class RelationsExplorerDock(QDockWidget):
         self.btn_export = QPushButton('Exporter diagramme (SVG)…')
         self.btn_export_drawio = QPushButton('Exporter Draw.io…')
         self.btn_export_drawio.clicked.connect(self.export_drawio)
+        self.btn_export_html = QPushButton('Rapport HTML…')
+        self.btn_export_html.clicked.connect(self.export_html_report)        
 
         self.search = QLineEdit()
         self.search.setPlaceholderText('Rechercher une table…')
@@ -43,10 +47,11 @@ class RelationsExplorerDock(QDockWidget):
         header_top.addWidget(self.search)
         header_top.addWidget(self.btn_export)
 
-        # Ligne 2 : ..... [Exporter Draw.io…] (aligné à droite)
+        # Ligne 2 : ..... [Rapport HTML…] [Exporter Draw.io…] (aligné à droite)
         header_bottom.addStretch(1)
+        header_bottom.addWidget(self.btn_export_html)
         header_bottom.addWidget(self.btn_export_drawio)
-        header_bottom.setContentsMargins(0, 0, 0, 6)  # petit espace
+        header_bottom.setContentsMargins(0, 0, 0, 6)
 
         header_area.addLayout(header_top)
         header_area.addLayout(header_bottom)
@@ -129,11 +134,58 @@ class RelationsExplorerDock(QDockWidget):
             mp.setdefault(key, []).extend(e.pairs)
         return mp
 
-    def _snapshot_to_plain(self, focus_ids=None):
+    def _current_focus_ids(self) -> set:
+        """
+        Retourne l'ensemble des IDs de couches qui servent de *focus* pour le diagramme.
+
+        - Si une recherche est saisie : couches dont le nom matche la recherche
+        - Sinon : couches sélectionnées dans la board (colonnes du bas)
+        """
+        if not self.snapshot:
+            return set()
+
+        query = self.search.text().strip().lower()
+        if query:
+            focus_ids = set()
+            for nid, node in self.snapshot.layers.items():
+                try:
+                    name = node.name.lower()
+                except AttributeError:
+                    name = str(node.name).lower()
+                if query in name:
+                    focus_ids.add(nid)
+            return focus_ids
+
+        # Pas de recherche : on prend ce qui est réellement visible côté board
+        return set(self.board.selected_layer_ids() or [])
+
+    def _search_focus_ids(self) -> set:
+        """
+        Retourne les IDs de couches qui matchent la recherche (champ du haut),
+        sans tenir compte des tables présentes dans la board.
+        """
+        if not self.snapshot:
+            return set()
+
+        query = self.search.text().strip().lower()
+        if not query:
+            return set()
+
+        ids = set()
+        for nid, node in self.snapshot.layers.items():
+            try:
+                name = node.name.lower()
+            except AttributeError:
+                name = str(node.name).lower()
+            if query in name:
+                ids.add(nid)
+        return ids
+
+    def _snapshot_to_plain(self):
         if not self.snapshot:
             return ""
         highlight = self.board.selected_layer_ids()
-        focus = set(focus_ids or highlight)
+        focus = self._current_focus_ids()
         return self.gv.render_plain(
             self.snapshot,
             highlight_ids=highlight,
@@ -145,15 +197,9 @@ class RelationsExplorerDock(QDockWidget):
         if not self.snapshot:
             return
 
-        # focus via champ de recherche (par nom de couche)
-        query = self.search.text().strip().lower()
-        focus_ids = set()
-        if query:
-            for nid, node in self.snapshot.layers.items():
-                if query in node.name.lower():
-                    focus_ids.add(nid)
+        # Utilise exactement le même focus que celui qui sera utilisé pour l'export
+        plain = self._snapshot_to_plain()
 
-        plain = self._snapshot_to_plain(focus_ids)
         if not plain:
             txt = "Impossible de générer le diagramme. Vérifie Graphviz (binaire 'dot').\n"
             if getattr(self.gv, 'last_error', ''):
@@ -193,17 +239,69 @@ class RelationsExplorerDock(QDockWidget):
         except Exception as e:
             self.iface.messageBar().pushWarning("LinQ", f"Impossible d'ajouter la table : {e}")
 
-    # --------------------------------------------------------------- export SVG
+        # --------------------------------------------------------------- export SVG
     def export_diagram(self):
         if not self.snapshot:
             return
-        fn, _ = QFileDialog.getSaveFileName(self, 'Exporter le diagramme', 'relations.svg', 'SVG (*.svg)')
+
+        # Tables présentes dans la partie inférieure (LinQ)
+        highlight = self.board.selected_layer_ids() or []
+        # Tables qui matchent la recherche (champ "Rechercher une table…")
+        search_focus = self._search_focus_ids()
+
+        # Ce qui sera envoyé à Graphviz comme "focus_ids"
+        focus_for_export = None
+
+        if search_focus:
+            # Une recherche est active : on laisse le choix
+            msg = QMessageBox(self)
+            msg.setWindowTitle('Export du diagramme')
+            msg.setText(
+                "Une recherche est active.\n"
+                "Que souhaites-tu exporter ?"
+            )
+            btn_filtered = msg.addButton(
+                f"Vue filtrée ({len(search_focus)} table(s))",
+                QMessageBox.AcceptRole
+            )
+            btn_board = msg.addButton(
+                f"Toutes les tables LinQ ({len(highlight)} table(s))",
+                QMessageBox.YesRole
+            )
+            btn_cancel = msg.addButton(QMessageBox.Cancel)
+            msg.setDefaultButton(btn_filtered)
+            msg.exec_()
+            clicked = msg.clickedButton()
+            if clicked is btn_cancel:
+                return
+            elif clicked is btn_filtered:
+                # Vue filtrée : uniquement les tables qui matchent la recherche
+                focus_for_export = set(search_focus)
+            else:
+                # Toutes les tables LinQ : toutes les tables de la board
+                focus_for_export = set(highlight) if highlight else None
+        else:
+            # Pas de recherche : comportement "simple" :
+            # on exporte les tables LinQ (comme avant)
+            focus_for_export = set(highlight) if highlight else None
+
+        fn, _ = QFileDialog.getSaveFileName(
+            self,
+            'Exporter le diagramme',
+            'relations.svg',
+            'SVG (*.svg)'
+        )
         if not fn:
             return
-        highlight = self.board.selected_layer_ids()
-        svg = self.gv.render_svg(self.snapshot, highlight_ids=highlight, focus_ids=highlight)
+
+        svg = self.gv.render_svg(
+            self.snapshot,
+            highlight_ids=highlight,
+            focus_ids=focus_for_export if focus_for_export else None
+        )
         if not svg:
             return
+
         with open(fn, 'wb') as f:
             f.write(svg)
 
@@ -212,7 +310,43 @@ class RelationsExplorerDock(QDockWidget):
         if not self.snapshot:
             QMessageBox.information(self, 'Export', 'Aucun diagramme à exporter. Lance d’abord l’analyse.')
             return
-        fn, _ = QFileDialog.getSaveFileName(self, 'Exporter au format draw.io', 'linq_model.drawio', 'Draw.io (*.drawio)')
+
+        # IDs de couches filtrées par la recherche (champ "Rechercher une table…")
+        focus_from_search = self._current_focus_ids()
+        # Tables présentes dans la partie inférieure (LinQ)
+        highlight = self.board.selected_layer_ids()
+
+        # Choix : vue filtrée ou ensemble des tables de la board
+        focus_for_export = None
+        if focus_from_search:
+            msg = QMessageBox(self)
+            msg.setWindowTitle('Export draw.io')
+            msg.setText("Souhaites-tu exporter uniquement la vue filtrée "
+                        "(tables correspondant à la recherche en cours) ?")
+            btn_filtered = msg.addButton("Vue filtrée", QMessageBox.AcceptRole)
+            btn_all = msg.addButton("Toutes les tables LinQ", QMessageBox.YesRole)
+            btn_cancel = msg.addButton(QMessageBox.Cancel)
+            msg.setDefaultButton(btn_filtered)
+            msg.exec_()
+            clicked = msg.clickedButton()
+            if clicked is btn_cancel:
+                return
+            elif clicked is btn_filtered:
+                # Vue filtrée : on se base sur les IDs trouvés via la recherche
+                focus_for_export = set(focus_from_search)
+            else:
+                # Toutes les tables LinQ (board)
+                focus_for_export = set(highlight) if highlight else None
+        else:
+            # Pas de filtre de recherche : comportement "historique"
+            focus_for_export = set(highlight) if highlight else None
+
+        fn, _ = QFileDialog.getSaveFileName(
+            self,
+            'Exporter au format draw.io',
+            'linq_model.drawio',
+            'Draw.io (*.drawio)'
+        )
         if not fn:
             return
 
@@ -231,9 +365,86 @@ class RelationsExplorerDock(QDockWidget):
             return
 
         try:
-            xml = build_drawio(self.snapshot, node_positions=node_pos)
+            xml = build_drawio(
+                self.snapshot,
+                node_positions=node_pos,
+                focus_ids=focus_for_export if focus_for_export else None
+            )
             with open(fn, 'wb') as f:
                 f.write(xml)
             QMessageBox.information(self, 'Export', 'Fichier .drawio exporté avec succès.')
         except Exception as ex:
             QMessageBox.warning(self, 'Export', f'Échec export draw.io : {ex}')
+
+    # ----------------------------------------------------------- export HTML
+    def export_html_report(self):
+        if not self.snapshot or not self.board:
+            QMessageBox.information(
+                self,
+                'Rapport HTML',
+                "Aucun contenu à exporter.\nAjoute au moins une colonne dans LinQ."
+            )
+            return
+
+        # Demande au SelectionBoard de construire le HTML des colonnes
+        try:
+            body = self.board.build_html_report()
+        except Exception as ex:
+            QMessageBox.warning(self, 'Rapport HTML', f"Erreur lors de la génération : {ex}")
+            return
+
+        if not body or not body.strip():
+            QMessageBox.information(
+                self,
+                'Rapport HTML',
+                "Aucune colonne/entité visible à exporter."
+            )
+            return
+
+        html = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Rapport LinQ</title>
+  <style>
+    body { font-family: sans-serif; margin: 1.5em; }
+    h1, h2 { font-family: sans-serif; }
+    h1 { margin-bottom: 0.5em; }
+    h2 { margin-top: 1.5em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+    details { margin-left: 1.2em; }
+    details > summary { cursor: pointer; font-weight: 500; }
+    ul { list-style-type: disc; margin-left: 1.5em; }
+    li { margin: 2px 0; }
+    code { background: #f5f5f5; padding: 1px 3px; border-radius: 3px; }
+    .meta { color: #555; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+<h1>Rapport LinQ – Relations et entités visibles</h1>
+""" + body + """
+</body>
+</html>
+"""
+
+        # Choix du fichier
+        fn, _ = QFileDialog.getSaveFileName(
+            self,
+            'Enregistrer le rapport HTML',
+            'rapport_linq.html',
+            'HTML (*.html *.htm)'
+        )
+        if not fn:
+            return
+
+        try:
+            with open(fn, 'w', encoding='utf-8') as f:
+                f.write(html)
+        except Exception as ex:
+            QMessageBox.warning(self, 'Rapport HTML', f"Impossible d'écrire le fichier : {ex}")
+            return
+
+        # Ouvrir dans le navigateur
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(fn))
+        except Exception:
+            pass
