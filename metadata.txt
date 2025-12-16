@@ -12,10 +12,10 @@ about=Ce plugin permet d'afficher sous forme de diagramme les relations enregist
 tracker=https://github.com/Bilou020285/linq/issues
 repository=https://github.com/Bilou020285/linq
 
-changelog=Version 1.1 : Changement de l'icône de l'extension. Possibilité d'exporter le diagramme filtré. Résolution du problème de comportement de l'enregistrement des données dans la table intermédiaire et possibilité de faire glisser plusieurs entités dans le cas des relations de N à N (dans ce cas, les formulaires de chaque associations s'ouvrent). Change to the extension icon. Option to export the filtered diagram. Resolution of the issue with data recording in the intermediate table and option to drag multiple entities in the case of N to N relationships (in this case, the forms for each association open).
+changelog=Version 1.1 : Changement de l'icône de l'extension. Possibilité d'exporter le diagramme filtré. Résolution du problème de comportement de l'enregistrement des données dans la table intermédiaire et possibilité de faire glisser plusieurs entités dans le cas des relations de N à N (dans ce cas, les formulaires de chaque associations s'ouvrent). Change to the extension icon. Option to export the filtered diagram. Resolution of the issue with data recording in the intermediate table and option to drag multiple entities in the case of N to N relationships (in this case, the forms for each association open). Version 1.1.1 : Relations réflexives : correction du bug d'affichage des relations dans l'affichage du diagramme et correction du sélecteur de relations. L'arrière-plan du diagramme est désormais systématiquement blanc. Reflective Relationships: Fixed relationship display bug in diagram view and fixed relationship picker. The background of the diagram is now always white.
 
 tags=python, QGIS, plugin, relations
-version=1.1
+version=1.1.1
 license=GPL-2.0-or-later
 
 homepage=https://github.com/Bilou020285/linq

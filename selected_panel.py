@@ -954,7 +954,7 @@ class ColumnWidget(QWidget):
             return
 
         # ---------- N↔N via table d’association (auto-FK) ----------
-        from .relation_utils import find_link_tables_between
+        from .relation_utils import find_link_tables_between, _pairs_parent_child
         cands = find_link_tables_between(QgsProject.instance(), src_layer, tgt_layer)
         if cands:
             L = None
@@ -971,12 +971,41 @@ class ColumnWidget(QWidget):
             else:
                 options = []
                 mapping = []
+
+                def _rel_tag(r):
+                    # Nom lisible si dispo, sinon ID interne
+                    try:
+                        nm = (r.name() or "").strip()
+                        if nm:
+                            return nm
+                    except Exception:
+                        pass
+                    try:
+                        return r.id()
+                    except Exception:
+                        return "?"
+
+                def _pairs_str(r):
+                    # Utilise l'helper si présent, sinon fallback
+                    try:
+                        pairs = list(_pairs_parent_child(r))
+                    except Exception:
+                        pairs = list(r.fieldPairs().items())
+                    return ", ".join([f"{pk}->{fk}" for pk, fk in pairs])
+
                 for (Lk, r1, r2) in cands:
                     p1 = r1.referencedLayer().name() if r1.referencedLayer() else "?"
                     p2 = r2.referencedLayer().name() if r2.referencedLayer() else "?"
-                    fp1 = ", ".join([f"{pk}->{fk}" for pk, fk in r1.fieldPairs().items()])
-                    fp2 = ", ".join([f"{pk}->{fk}" for pk, fk in r2.fieldPairs().items()])
-                    label = f"{Lk.name()}  ⟦ {p1}[{fp1}] + {p2}[{fp2}] ⟧"
+
+                    fp1 = _pairs_str(r1)
+                    fp2 = _pairs_str(r2)
+
+                    label = (
+                        f"{Lk.name()}  ⟦ "
+                        f"{p1} ({_rel_tag(r1)}: {fp1}) + "
+                        f"{p2} ({_rel_tag(r2)}: {fp2})"
+                        f" ⟧"
+                    )
                     options.append(label)
                     mapping.append((Lk, r1, r2))
 

@@ -124,14 +124,15 @@ class RelationsExplorerDock(QDockWidget):
         self.board.set_snapshot(self.snapshot)
         self.refresh_diagram_only()
 
-    # Mapping (parent_id, child_id) -> [ (PK_parent, FK_enfant), ... ]
+    # Mapping (parent_id, child_id) -> [ [ (PK_parent, FK_enfant), ... ], [ ... ], ... ]
+    # (une liste par relation / arête)
     def _edge_pairs_map(self):
         mp = {}
         if not self.snapshot:
             return mp
         for e in self.snapshot.edges:
             key = (e.parent_layer_id, e.child_layer_id)
-            mp.setdefault(key, []).extend(e.pairs)
+            mp.setdefault(key, []).append(list(e.pairs))
         return mp
 
     def _current_focus_ids(self) -> set:

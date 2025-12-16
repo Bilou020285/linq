@@ -211,8 +211,14 @@ def new_prefilled_link_feature(link_layer: QgsVectorLayer,
 def find_link_tables_between(project: QgsProject,
                              layer_a: QgsVectorLayer,
                              layer_b: QgsVectorLayer):
-    """Retourne une liste de candidats (L, r1, r2) où L est une table d'association
-    telle que r1: parent=A, child=L et r2: parent=B, child=L. Cas réflexif accepté (A == B)."""
+    """
+    Retourne une liste de candidats (L, r_src, r_tgt) où L est une table d'association
+    telle que r_src: parent=layer_a, child=L et r_tgt: parent=layer_b, child=L.
+
+    Cas réflexif (A == B) :
+      - on renvoie DEUX candidats pour permettre le choix du sens :
+        (L, r1, r2) et (L, r2, r1)
+    """
     rels = list(project.relationManager().relations().values())
     by_child = {}
     for r in rels:
@@ -223,22 +229,53 @@ def find_link_tables_between(project: QgsProject,
         by_child.setdefault(child.id(), []).append(r)
 
     out = []
+    seen = set()  # (L_id, rel_src_id, rel_tgt_id)
+
+    a_id = layer_a.id()
+    b_id = layer_b.id()
+    reflexive = (a_id == b_id)
+
     for L_id, lst in by_child.items():
         if len(lst) < 2:
             continue
         L = project.mapLayer(L_id)
         if not isinstance(L, QgsVectorLayer):
             continue
+
         n = len(lst)
         for i in range(n):
-            for j in range(i+1, n):
+            for j in range(i + 1, n):
                 r1, r2 = lst[i], lst[j]
                 p1, p2 = r1.referencedLayer(), r2.referencedLayer()
                 if not p1 or not p2:
                     continue
-                if ((p1.id() == layer_a.id() and p2.id() == layer_b.id()) or
-                    (p1.id() == layer_b.id() and p2.id() == layer_a.id())):
-                    out.append((L, r1, r2))
-                if layer_a.id() == layer_b.id() and p1.id() == layer_a.id() and p2.id() == layer_a.id():
-                    out.append((L, r1, r2))
+
+                p1_id = p1.id()
+                p2_id = p2.id()
+
+                if reflexive:
+                    # On veut les 2 orientations quand p1 et p2 pointent tous deux vers A
+                    if p1_id == a_id and p2_id == a_id:
+                        k1 = (L_id, r1.id(), r2.id())
+                        if k1 not in seen:
+                            out.append((L, r1, r2))
+                            seen.add(k1)
+                        k2 = (L_id, r2.id(), r1.id())
+                        if k2 not in seen:
+                            out.append((L, r2, r1))
+                            seen.add(k2)
+                    continue
+
+                # Non réflexif : on ne renvoie qu'une orientation "canonique"
+                if p1_id == a_id and p2_id == b_id:
+                    k = (L_id, r1.id(), r2.id())
+                    if k not in seen:
+                        out.append((L, r1, r2))
+                        seen.add(k)
+                elif p1_id == b_id and p2_id == a_id:
+                    k = (L_id, r2.id(), r1.id())  # on remet dans l'ordre (src=A, tgt=B)
+                    if k not in seen:
+                        out.append((L, r2, r1))
+                        seen.add(k)
+
     return out

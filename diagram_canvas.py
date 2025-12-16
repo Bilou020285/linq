@@ -4,6 +4,7 @@ from qgis.PyQt.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from qgis.PyQt.QtGui import QPainter, QPen, QBrush, QPainterPath, QPolygonF, QColor, QFont, QFontMetrics
 from qgis.PyQt.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsObject, QMenu
 from qgis.core import QgsProject
+from collections import Counter, defaultdict
 
 PX_PER_INCH = 96.0
 RADIUS = 10.0
@@ -166,6 +167,7 @@ class DiagramCanvas(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
+        self.setBackgroundBrush(QBrush(QColor("#ffffff")))
         self.setRenderHints(self.renderHints()|QPainter.Antialiasing|QPainter.TextAntialiasing)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setDragMode(QGraphicsView.NoDrag)
@@ -215,20 +217,58 @@ class DiagramCanvas(QGraphicsView):
 
         edge_set = set(edges_raw)
         bidir = set()
-        for tail,head in edges_raw:
-            if (head,tail) in edge_set and tail!=head:
-                bidir.add(frozenset((tail,head)))
+        for tail, head in edges_raw:
+            if (head, tail) in edge_set and tail != head:
+                bidir.add(frozenset((tail, head)))
 
-        for tail,head in edges_raw:
-            src=self.nodes.get(tail); dst=self.nodes.get(head)
-            if not src or not dst: continue
+        # NEW : gestion multi-arêtes (mêmes tail/head plusieurs fois)
+        counts = Counter(edges_raw)
+        seen = defaultdict(int)
+
+        for tail, head in edges_raw:
+            src = self.nodes.get(tail)
+            dst = self.nodes.get(head)
+            if not src or not dst:
+                continue
+
+            key = (tail, head)
+            occ = seen[key]
+            seen[key] += 1
+            n = counts[key]
+
+            # Base : séparation des bidirectionnelles
             off = 0.0
-            if frozenset((tail,head)) in bidir:
+            if frozenset((tail, head)) in bidir:
                 off = +OFFSET if tail < head else -OFFSET
-            # edge_pairs_map robuste : on passe les entrées brutes au EdgeItem
-            pairs = (edge_pairs_map or {}).get((tail,head), [])
-            e=EdgeItem(src,dst,pairs=pairs,highlight=(tail in selected_ids or head in selected_ids),offset=off)
-            self.scene().addItem(e); self.edges.append(e)
+
+            # NEW : séparation des arêtes parallèles (même direction)
+            if n > 1 and tail != head:
+                mid = (n - 1) / 2.0
+                off += (occ - mid) * OFFSET
+
+            # NEW : edge_pairs_map = liste par occurrence
+            pairs = []
+            lst = (edge_pairs_map or {}).get(key, [])
+
+            # compat éventuelle si lst est encore "aplati" (ancienne version)
+            if lst and isinstance(lst[0], (tuple, list)) and len(lst[0]) == 2 and not (lst and isinstance(lst[0][0], (tuple, list))):
+                pairs = lst
+            else:
+                if occ < len(lst):
+                    pairs = lst[occ]
+                elif lst:
+                    pairs = lst[-1]  # fallback
+                else:
+                    pairs = []
+
+            e = EdgeItem(
+                src, dst,
+                pairs=pairs,
+                highlight=(tail in selected_ids or head in selected_ids),
+                offset=off
+            )
+            self.scene().addItem(e)
+            self.edges.append(e)
 
         self._fit_scene()
 
